@@ -1,2 +1,4 @@
 PyQt-Fluent-Widgets>=1.6.3
 qasync==0.27.1
+pyqtgraph==0.13.7
+pydub
