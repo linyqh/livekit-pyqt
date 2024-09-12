@@ -1,4 +1,4 @@
-# LiveKit 客户端
+# LiveKit PyQt5 客户端
 基于 https://github.com/zhiyiYo/PyQt-Fluent-Widgets 创建
 - python 3.10
 
