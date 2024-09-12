@@ -9,7 +9,7 @@ from PyQt5.QtMultimedia import QAudioOutput, QAudioFormat
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from qfluentwidgets import (CardWidget, TitleLabel, SubtitleLabel, BodyLabel, 
                             ScrollArea, PushButton, FluentIcon, Theme, setTheme, 
-                            setThemeColor, isDarkTheme)
+                            setThemeColor, isDarkTheme, ProgressBar)
 
 from livekit import rtc
 from app.utils.logger import logger
@@ -104,7 +104,16 @@ class SubscribedTracksWidget(QWidget):
         elif track_type == "Audio":
             audio_label = BodyLabel("音频轨道", self)
             card_layout.addWidget(audio_label)
-            self.tracks[track_id] = {'card': track_card, 'audio_label': audio_label}
+            
+            # 添加音量条
+            volume_bar = ProgressBar(self)
+            volume_bar.setRange(0, 100)
+            volume_bar.setValue(0)
+            volume_bar.setTextVisible(False)
+            volume_bar.setFixedHeight(10)
+            card_layout.addWidget(volume_bar)
+            
+            self.tracks[track_id] = {'card': track_card, 'audio_label': audio_label, 'volume_bar': volume_bar}
 
         # 按钮布局
         button_layout = QHBoxLayout()
@@ -138,11 +147,18 @@ class SubscribedTracksWidget(QWidget):
                 new_text = current_text + f"\n状态: {status}"
                 info_label.setText(new_text)
 
+    def update_volume(self, track_id, volume):
+        if track_id in self.tracks and 'volume_bar' in self.tracks[track_id]:
+            volume_bar = self.tracks[track_id]['volume_bar']
+            volume_bar.setValue(int(volume * 100))
+
     async def play_audio_stream(self, audio_stream):
         try:
             self.is_playing = True
             self.audio_thread = threading.Thread(target=self._audio_playback_thread)
             self.audio_thread.start()
+
+            track_id = audio_stream._track.sid
 
             async for frame_event in audio_stream:
                 audio_frame = frame_event.frame
@@ -154,6 +170,10 @@ class SubscribedTracksWidget(QWidget):
                     audio_data = audio_data.astype(np.int16)
                 else:
                     audio_data = np.frombuffer(audio_data, dtype=np.int16)
+
+                # 计算音量
+                volume = np.abs(audio_data).mean() / 32768.0
+                self.update_volume(track_id, volume)
 
                 self.audio_queue.put(audio_data)
                 await asyncio.sleep(0)
@@ -170,7 +190,13 @@ class SubscribedTracksWidget(QWidget):
 
     async def play_video_stream(self, video_stream):
         try:
+            track_id = video_stream._track.sid
+            self.video_playing[track_id] = True
+
             async for frame_event in video_stream:
+                if not self.video_playing[track_id]:
+                    break
+
                 buffer = frame_event.frame
 
                 # 将视频帧转换为 numpy 数组
@@ -187,7 +213,7 @@ class SubscribedTracksWidget(QWidget):
 
                 # 将 QImage 转换为 QPixmap 并设置到 QLabel
                 pixmap = QPixmap.fromImage(q_img)
-                video_label = self.tracks[video_stream._track.sid]['video_label']
+                video_label = self.tracks[track_id]['video_label']
                 video_label.setPixmap(pixmap.scaled(video_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
                 # 给 Qt 事件循环一些时间来更新 UI
@@ -198,8 +224,8 @@ class SubscribedTracksWidget(QWidget):
         except Exception as e:
             logger.error(f"播放视频时发生错误: \n{traceback.format_exc()}")
         finally:
+            self.video_playing[track_id] = False
             await video_stream.aclose()
-
 
     async def record_audio_stream(self, audio_stream: rtc.AudioStream, track_id):
         try:
