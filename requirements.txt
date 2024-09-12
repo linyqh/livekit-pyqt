@@ -3,3 +3,5 @@ qasync==0.27.1
 pyqtgraph==0.13.7
 pydub
 opencv-python
+livekit-api
+livekit
