@@ -76,6 +76,7 @@ class LiveKitManager(FluentWindow):
 
         self.subscribed_tracks.play_track_signal.connect(self.on_play_track)
         self.subscribed_tracks.record_track_signal.connect(self.on_record_track)
+        self.subscribed_tracks.stop_track_signal.connect(self.stop_track)
 
     def on_join_room(self, url, token):
         asyncio.ensure_future(self.async_join_room(url, token))
@@ -171,7 +172,7 @@ class LiveKitManager(FluentWindow):
 
     def on_track_unsubscribed(self, track, publication: RemoteTrackPublication, participant: RemoteParticipant):
         logger.info(f"已取订阅轨道: {publication.sid} 来自 {participant.identity}")
-        self.join_room.add_room_event("轨道取消订阅", f"已取消订阅来自 {participant.identity} 的轨道 {publication.sid}")
+        self.join_room.add_room_event("轨道取���订阅", f"已取消订阅来自 {participant.identity} 的轨道 {publication.sid}")
         
         if publication.sid in self.audio_tasks:
             self.audio_tasks[publication.sid].cancel()
@@ -185,7 +186,7 @@ class LiveKitManager(FluentWindow):
 
     async def update_participants_info(self):
         if not self.current_room:
-            logger.warning("尝试更新参与者信息，但房间未连接")
+            logger.warning("试新参与者信息，但房间连接")
             return
 
         tracks_data = []
@@ -215,7 +216,7 @@ class LiveKitManager(FluentWindow):
                                  Qt.QueuedConnection,
                                  Q_ARG(list, tracks_data))
 
-        logger.info(f"更新了 {len(tracks_data)} 条轨道信息")
+        logger.info(f"更��了 {len(tracks_data)} 条轨道信息")
 
     def get_room_connection_status(self):
         return self.room_connected
@@ -308,7 +309,7 @@ class LiveKitManager(FluentWindow):
                     track_publication = participant_obj.track_publications.get(track_id)
                     if track_publication:
                         if track_publication.subscribed:
-                            # 直接���置 subscribed 属性为 False
+                            # 直接置 subscribed 属性为 False
                             track_publication.subscribed = False
                             
                             if track_id in self.audio_tasks:
@@ -416,7 +417,7 @@ class LiveKitManager(FluentWindow):
                     if track:
                         if track_type == "Audio":
                             audio_stream = rtc.AudioStream(track=track)
-                            await self.subscribed_tracks.play_audio_stream(audio_stream)
+                            self.audio_tasks[track_id] = asyncio.create_task(self.subscribed_tracks.play_audio_stream(audio_stream))
                         elif track_type == "Video":
                             video_stream = rtc.VideoStream(track, format=rtc.VideoBufferType.RGB24)
                             await self.subscribed_tracks.play_video_stream(video_stream)
@@ -434,7 +435,7 @@ class LiveKitManager(FluentWindow):
                                 audio_stream = rtc.AudioStream(track=track)
                                 await self.subscribed_tracks.record_audio_stream(audio_stream, track_id)
                             elif track_type == "Video":
-                                video_stream = rtc.VideoStream(track, format=rtc.VideoBufferType.RGB24)
+                                video_stream = rtc.VideoStream(track)
                                 await self.subscribed_tracks.record_video_stream(video_stream, track_id)
                             logger.info(f"开始录制 {track_type} 轨道: {track_id}")
                         else:
@@ -447,3 +448,32 @@ class LiveKitManager(FluentWindow):
                 logger.error(traceback.format_exc())
         else:
             logger.error("未连接到房间")
+
+    def get_video_stream(self, track_id):
+        if self.current_room:
+            for participant in self.current_room.remote_participants.values():
+                track_publication = participant.track_publications.get(track_id)
+                if track_publication and track_publication.kind == TrackKind.KIND_VIDEO:
+                    return rtc.VideoStream(track_publication.track)
+        return None
+
+    def stop_track(self, track_id, track_type):
+        try:
+            if track_type == "Audio":
+                if track_id in self.audio_tasks:
+                    self.audio_tasks[track_id].cancel()
+                    del self.audio_tasks[track_id]
+                asyncio.create_task(self.subscribed_tracks.stop_audio_stream())
+            elif track_type == "Video":
+                if track_id in self.video_tasks:
+                    self.video_tasks[track_id].cancel()
+                    del self.video_tasks[track_id]
+                video_stream = self.get_video_stream(track_id)
+                if video_stream:
+                    asyncio.create_task(self.subscribed_tracks.stop_video_stream(video_stream))
+                else:
+                    logger.error(f"无法获取视频流: {track_id}")
+            logger.info(f"停止播放 {track_type} 轨道: {track_id}")
+        except Exception as e:
+            logger.error(f"停止播放轨道时发生错误: {str(e)}")
+            logger.error(traceback.format_exc())

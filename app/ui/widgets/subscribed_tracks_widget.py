@@ -4,10 +4,13 @@ import numpy as np
 import asyncio
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QGridLayout, QScrollArea, QPushButton, QHBoxLayout
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap  # 添加这行
+from PyQt5.QtGui import QImage, QPixmap, QColor
 from PyQt5.QtMultimedia import QAudioOutput, QAudioFormat
-from PyQt5.QtMultimediaWidgets import QVideoWidget  # 添加这行导入
-from qfluentwidgets import CardWidget, TitleLabel, ScrollArea, PushButton
+from PyQt5.QtMultimediaWidgets import QVideoWidget
+from qfluentwidgets import (CardWidget, TitleLabel, SubtitleLabel, BodyLabel, 
+                            ScrollArea, PushButton, FluentIcon, Theme, setTheme, 
+                            setThemeColor, isDarkTheme)
+
 from livekit import rtc
 from app.utils.logger import logger
 import os
@@ -16,6 +19,8 @@ import cv2
 import sounddevice as sd
 import queue
 import threading
+import ctypes
+import datetime
 
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
@@ -23,8 +28,9 @@ CHANNELS = 1
 RATE = 48000
 
 class SubscribedTracksWidget(QWidget):
-    play_track_signal = pyqtSignal(str, str)  # track_id, track_type
-    record_track_signal = pyqtSignal(str, str)  # track_id, track_type
+    play_track_signal = pyqtSignal(str, str)
+    record_track_signal = pyqtSignal(str, str)
+    stop_track_signal = pyqtSignal(str, str)  # 新增停止信号
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,19 +40,39 @@ class SubscribedTracksWidget(QWidget):
         self.stream = None
         self.audio_output = None
         self.audio_buffer = None
-        self.audio_queue = queue.Queue(maxsize=10)  # 添加音频队列
+        self.audio_queue = queue.Queue(maxsize=10)
         self.audio_thread = None
         self.is_playing = False
+        self.video_playing = {}  # 用于跟踪每个视频流的播放状态
 
     def initUI(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(36, 36, 36, 36)
+        layout.setSpacing(24)
 
+        # 设置简单的背景色
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #2B2B2B;
+                color: white;
+            }
+        """)
+
+        # 标题
         title = TitleLabel("已订阅的轨道", self)
+        title.setObjectName("subscribeTitle")
         layout.addWidget(title)
 
+        # 副标题
+        subtitle = SubtitleLabel("在这里查看和管理已订阅的音视频轨道", self)
+        subtitle.setObjectName("subscribeSubtitle")
+        layout.addWidget(subtitle)
+
+        # 滚动区域
         scroll_area = ScrollArea(self)
         content_widget = QWidget()
         self.tracks_grid = QGridLayout(content_widget)
+        self.tracks_grid.setSpacing(20)
         scroll_area.setWidget(content_widget)
         scroll_area.setWidgetResizable(True)
         layout.addWidget(scroll_area)
@@ -59,9 +85,15 @@ class SubscribedTracksWidget(QWidget):
 
         track_card = CardWidget(self)
         card_layout = QVBoxLayout(track_card)
+        card_layout.setSpacing(12)
 
-        info_label = QLabel(f"参与者: {participant}\n轨道ID: {track_id}\n类型: {track_type}")
-        card_layout.addWidget(info_label)
+        # 参与者信息
+        participant_label = SubtitleLabel(f"参与者: {participant}", self)
+        card_layout.addWidget(participant_label)
+
+        # 轨道信息
+        track_info = BodyLabel(f"轨道ID: {track_id}\n类型: {track_type}", self)
+        card_layout.addWidget(track_info)
 
         if track_type == "Video":
             video_label = QLabel(self)
@@ -70,17 +102,21 @@ class SubscribedTracksWidget(QWidget):
             card_layout.addWidget(video_label)
             self.tracks[track_id] = {'card': track_card, 'video_label': video_label}
         elif track_type == "Audio":
-            audio_label = QLabel("音频轨道")
+            audio_label = BodyLabel("音频轨道", self)
             card_layout.addWidget(audio_label)
             self.tracks[track_id] = {'card': track_card, 'audio_label': audio_label}
 
+        # 按钮布局
         button_layout = QHBoxLayout()
-        play_button = PushButton("播放直播")
+        play_button = PushButton("播放直播", self, FluentIcon.PLAY)
         play_button.clicked.connect(lambda: self.play_track_signal.emit(track_id, track_type))
-        record_button = PushButton("录制存储")
+        stop_button = PushButton("停止播放", self, FluentIcon.STOP_WATCH)  # 新增停止按钮
+        stop_button.clicked.connect(lambda: self.stop_track_signal.emit(track_id, track_type))
+        record_button = PushButton("录制存储", self, FluentIcon.SAVE)
         record_button.clicked.connect(lambda: self.record_track_signal.emit(track_id, track_type))
 
         button_layout.addWidget(play_button)
+        button_layout.addWidget(stop_button)  # 添加停止按钮到布局
         button_layout.addWidget(record_button)
         card_layout.addLayout(button_layout)
 
@@ -164,6 +200,7 @@ class SubscribedTracksWidget(QWidget):
         finally:
             await video_stream.aclose()
 
+
     async def record_audio_stream(self, audio_stream: rtc.AudioStream, track_id):
         try:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -190,7 +227,7 @@ class SubscribedTracksWidget(QWidget):
             logger.info(f"音频已录制并保存到 {filepath}")
 
         except asyncio.CancelledError:
-            logger.info("音频录制已取消")
+            logger.info("频录制已取消")
         except Exception as e:
             logger.error(f"录制音频时发生错误: \n{traceback.format_exc()}")
         finally:
@@ -226,6 +263,29 @@ class SubscribedTracksWidget(QWidget):
             # out.release()
             await video_stream.aclose()
 
+    async def stop_audio_stream(self):
+        self.is_playing = False
+        if self.audio_thread:
+            self.audio_thread.join()
+        self.audio_queue.queue.clear()
+        logger.info("音频流已停止")
+
+    async def stop_video_stream(self, video_stream):
+        try:
+            track_id = video_stream._track.sid if video_stream else None
+            if track_id:
+                self.video_playing[track_id] = False
+            if video_stream:
+                await video_stream.aclose()
+            if track_id in self.tracks:
+                video_label = self.tracks[track_id]['video_label']
+                video_label.clear()  # 清除视频标签的内容
+                video_label.setText("视频已停止")  # 添加一个文本提示
+            logger.info(f"视频流已停止: {track_id}")
+        except Exception as e:
+            logger.error(f"停止视频流时发生错误: {str(e)}")
+            logger.error(traceback.format_exc())
+
     def pause_audio(self):
         if self.audio_output:
             self.audio_output.suspend()
@@ -254,8 +314,11 @@ class SubscribedTracksWidget(QWidget):
         super().closeEvent(event)
 
     def __del__(self):
-        self.is_playing = False
-        if self.audio_thread:
-            self.audio_thread.join()
-        if self.p:
-            self.p.terminate()
+        try:
+            self.is_playing = False
+            if hasattr(self, 'audio_thread') and self.audio_thread:
+                self.audio_thread.join()
+            if hasattr(self, 'p') and self.p:
+                self.p.terminate()
+        except:
+            pass  # 忽略在删除过程中可能发生的任何错误
